@@ -1,0 +1,17 @@
+[package]
+name = "blinkstick"
+version = "0.1.0"
+edition = "2024"
+authors = ["Elias Jaderlund"]
+description = "Rust interface to control BlinkStick devices"
+license = "MIT"
+repository = "https://github.com/ejade/blinkstick-rust"
+keywords = ["blinkstick", "usb", "led", "hardware"]
+categories = ["hardware-support", "api-bindings"]
+
+[dependencies]
+rusb = "0.9.1"
+rand = "0.8.5"
+anyhow = "1.0.72"
+thiserror = "1.0.44"
+clap = { version = "4.3.19", features = ["derive"] }
