@@ -50,6 +50,9 @@ enum Commands {
     /// Turn off BlinkStick (set color to black)
     Off,
     
+    /// List all available color names
+    ListColors,
+    
     /// Add udev rule for BlinkStick devices on Linux
     AddUdevRule {
         /// Path to udev rules directory
@@ -138,6 +141,10 @@ fn main() -> Result<()> {
             println!("BlinkStick turned off");
         },
         
+        Commands::ListColors => {
+            list_available_colors();
+        },
+        
         Commands::AddUdevRule { path } => {
             if !cfg!(target_os = "linux") {
                 println!("This command is only available on Linux");
@@ -156,4 +163,67 @@ fn main() -> Result<()> {
     }
     
     Ok(())
+}
+
+fn list_available_colors() {
+    let colors = [
+        "aliceblue", "antiquewhite", "aqua", "aquamarine", "azure",
+        "beige", "bisque", "black", "blanchedalmond", "blue",
+        "blueviolet", "brown", "burlywood", "cadetblue", "chartreuse",
+        "chocolate", "coral", "cornflowerblue", "cornsilk", "crimson",
+        "cyan", "darkblue", "darkcyan", "darkgoldenrod", "darkgray",
+        "darkgreen", "darkgrey", "darkkhaki", "darkmagenta", "darkolivegreen",
+        "darkorange", "darkorchid", "darkred", "darksalmon", "darkseagreen",
+        "darkslateblue", "darkslategray", "darkslategrey", "darkturquoise", "darkviolet",
+        "deeppink", "deepskyblue", "dimgray", "dimgrey", "dodgerblue",
+        "firebrick", "floralwhite", "forestgreen", "fuchsia", "gainsboro",
+        "ghostwhite", "gold", "goldenrod", "gray", "green",
+        "greenyellow", "grey", "honeydew", "hotpink", "indianred",
+        "indigo", "ivory", "khaki", "lavender", "lavenderblush",
+        "lawngreen", "lemonchiffon", "lightblue", "lightcoral", "lightcyan",
+        "lightgoldenrodyellow", "lightgray", "lightgreen", "lightgrey", "lightpink",
+        "lightsalmon", "lightseagreen", "lightskyblue", "lightslategray", "lightslategrey",
+        "lightsteelblue", "lightyellow", "lime", "limegreen", "linen",
+        "magenta", "maroon", "mediumaquamarine", "mediumblue", "mediumorchid",
+        "mediumpurple", "mediumseagreen", "mediumslateblue", "mediumspringgreen", "mediumturquoise",
+        "mediumvioletred", "midnightblue", "mintcream", "mistyrose", "moccasin",
+        "navajowhite", "navy", "oldlace", "olive", "olivedrab",
+        "orange", "orangered", "orchid", "palegoldenrod", "palegreen",
+        "paleturquoise", "palevioletred", "papayawhip", "peachpuff", "peru",
+        "pink", "plum", "powderblue", "purple", "red",
+        "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown",
+        "seagreen", "seashell", "sienna", "silver", "skyblue",
+        "slateblue", "slategray", "slategrey", "snow", "springgreen",
+        "steelblue", "tan", "teal", "thistle", "tomato",
+        "turquoise", "violet", "wheat", "white", "whitesmoke",
+        "yellow", "yellowgreen", "random"
+    ];
+
+    println!("Available colors:");
+    
+    // Calculate column formatting
+    let num_colors = colors.len();
+    let max_color_length = colors.iter().map(|c| c.len()).max().unwrap_or(10);
+    let column_width = max_color_length + 2; // Add 2 for spacing
+    
+    // Determine number of columns based on terminal width (assume 80 chars by default)
+    let terminal_width = 80;
+    let num_columns = std::cmp::max(1, terminal_width / column_width);
+    let num_rows = (num_colors + num_columns - 1) / num_columns; // Ceiling division
+    
+    // Print in columns
+    for row in 0..num_rows {
+        let mut line = String::new();
+        
+        for col in 0..num_columns {
+            let index = col * num_rows + row;
+            if index < num_colors {
+                // Format each color with fixed width
+                let color_display = format!("{:<width$}", colors[index], width=column_width);
+                line.push_str(&color_display);
+            }
+        }
+        
+        println!("{}", line);
+    }
 }

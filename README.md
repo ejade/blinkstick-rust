@@ -39,6 +39,9 @@ blinkstick set-color blue --index 2
 
 # Set to a random color
 blinkstick set-color random
+
+# List all available color names
+blinkstick list-colors
 ```
 
 #### Pulse effect
