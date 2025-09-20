@@ -15,29 +15,29 @@ const BLINKSTICK_PRODUCT_ID: u16 = 0x41E5;
 // BlinkStick report IDs
 const REPORT_ID_1: u8 = 1; // First LED for BlinkStick
 const REPORT_ID_2: u8 = 2; // 8 LEDs for BlinkStick Pro
-const REPORT_ID_3: u8 = 3; // 64+ LEDs for BlinkStick Pro
-//const REPORT_ID_4: u8 = 4; // Inverse LED control
+const MAX_LED_COUNT: usize = 64;
+const LED_DATA_REPORTS: &[(u16, usize)] = &[(6, 8), (7, 16), (8, 32), (9, 64)];
 
 #[derive(Debug, Error)]
 pub enum BlinkStickError {
     #[error("USB error: {0}")]
     UsbError(#[from] rusb::Error),
-    
+
     #[error("No BlinkStick devices found")]
     NoDeviceFound,
-    
+
     #[error("Failed to get device descriptor")]
     DeviceDescriptorError,
-    
+
     #[error("Failed to open device")]
     OpenDeviceError,
-    
+
     #[error("Failed to claim interface")]
     ClaimInterfaceError,
-    
+
     #[error("Failed to set configuration")]
     SetConfigurationError,
-    
+
     #[error("Failed to send control transfer")]
     ControlTransferError,
 }
@@ -53,7 +53,7 @@ impl RgbColor {
     pub fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
     }
-    
+
     pub fn random() -> Self {
         use rand::Rng;
         let mut rng = rand::thread_rng();
@@ -63,7 +63,7 @@ impl RgbColor {
             b: rng.gen(),
         }
     }
-    
+
     pub fn from_name(name: &str) -> Option<Self> {
         // Standard CSS/HTML color names
         match name.to_lowercase().as_str() {
@@ -209,10 +209,10 @@ impl RgbColor {
             _ => None,
         }
     }
-    
+
     pub fn from_hex(hex: &str) -> Option<Self> {
         let hex = hex.trim_start_matches('#');
-        
+
         if hex.len() == 6 {
             if let Ok(val) = u32::from_str_radix(hex, 16) {
                 return Some(Self {
@@ -222,7 +222,7 @@ impl RgbColor {
                 });
             }
         }
-        
+
         None
     }
 }
@@ -237,88 +237,184 @@ impl BlinkStick {
         let context = Context::new()?;
         let devices = context.devices()?;
         let mut result = Vec::new();
-        
+
         for device in devices.iter() {
-            let device_desc = device.device_descriptor().map_err(|_| BlinkStickError::DeviceDescriptorError)?;
-            
-            if device_desc.vendor_id() == BLINKSTICK_VENDOR_ID && 
-               device_desc.product_id() == BLINKSTICK_PRODUCT_ID {
+            let device_desc = device
+                .device_descriptor()
+                .map_err(|_| BlinkStickError::DeviceDescriptorError)?;
+
+            if device_desc.vendor_id() == BLINKSTICK_VENDOR_ID
+                && device_desc.product_id() == BLINKSTICK_PRODUCT_ID
+            {
                 result.push(device);
             }
         }
-        
+
         Ok(result)
     }
-    
+
     /// Find the first available BlinkStick device
     pub fn find_first() -> Result<Self> {
         let devices = Self::find_all()?;
-        
+
         if devices.is_empty() {
             return Err(BlinkStickError::NoDeviceFound.into());
         }
-        
+
         Self::open(devices[0].clone())
     }
-    
+
     /// Open a specific BlinkStick device
     pub fn open(device: Device<Context>) -> Result<Self> {
-        let handle = device.open().map_err(|_| BlinkStickError::OpenDeviceError)?;
-        
+        let handle = device
+            .open()
+            .map_err(|_| BlinkStickError::OpenDeviceError)?;
+
         if handle.kernel_driver_active(0)? {
             handle.detach_kernel_driver(0)?;
         }
-        
-        handle.set_active_configuration(1).map_err(|_| BlinkStickError::SetConfigurationError)?;
-        handle.claim_interface(0).map_err(|_| BlinkStickError::ClaimInterfaceError)?;
-        
+
+        handle
+            .set_active_configuration(1)
+            .map_err(|_| BlinkStickError::SetConfigurationError)?;
+        handle
+            .claim_interface(0)
+            .map_err(|_| BlinkStickError::ClaimInterfaceError)?;
+
         Ok(Self { handle })
     }
-    
+
     /// Set the color of the first LED
     pub fn set_color(&self, color: &RgbColor) -> Result<()> {
         let data = [REPORT_ID_1, color.r, color.g, color.b];
         self.send_feature_report(&data)
     }
-    
+
     /// Set the color of a specific LED for BlinkStick Pro
     pub fn set_color_indexed(&self, index: u8, color: &RgbColor) -> Result<()> {
         if index == 0 {
             // For the first LED, use report ID 1
             return self.set_color(color);
         }
-        
+
         // For other LEDs, use report ID 2
         let data = [REPORT_ID_2, index, color.g, color.r, color.b];
         self.send_feature_report(&data)
     }
-    
+
     /// Set colors for multiple LEDs at once
     pub fn set_colors(&self, channel: u8, leds: &[RgbColor]) -> Result<()> {
         if leds.is_empty() {
             return Ok(());
         }
-        
+
+        if channel > 2 {
+            anyhow::bail!("Channel must be 0, 1, or 2");
+        }
+
         if leds.len() == 1 {
             return self.set_color(&leds[0]);
         }
-        
-        // For multiple LEDs, use report ID 3
-        let mut data = vec![REPORT_ID_3, channel, 0, leds.len() as u8];
-        
-        for color in leds {
-            data.push(color.r);
-            data.push(color.g);
-            data.push(color.b);
+
+        if leds.len() > MAX_LED_COUNT {
+            anyhow::bail!(
+                "BlinkStick supports up to {} LEDs per channel, got {}",
+                MAX_LED_COUNT,
+                leds.len()
+            );
         }
-        
-        self.send_feature_report(&data)
+
+        let (report_id, capacity) = Self::determine_led_report(leds.len());
+
+        let mut payload = Vec::with_capacity(2 + capacity * 3);
+        payload.push(0); // reserved byte per device protocol
+        payload.push(channel);
+
+        for color in leds {
+            payload.push(color.g);
+            payload.push(color.r);
+            payload.push(color.b);
+        }
+
+        for _ in leds.len()..capacity {
+            payload.extend_from_slice(&[0, 0, 0]);
+        }
+
+        self.send_class_report(report_id, 0, &payload)
     }
-    
+
+    fn determine_led_report(led_count: usize) -> (u16, usize) {
+        for (report_id, max_leds) in LED_DATA_REPORTS {
+            if led_count <= *max_leds {
+                return (*report_id, *max_leds);
+            }
+        }
+
+        LED_DATA_REPORTS
+            .last()
+            .copied()
+            .unwrap_or((LED_DATA_REPORTS[0].0, MAX_LED_COUNT))
+    }
+
+    /// Attempt to read the number of LEDs available on a given channel
+    pub fn get_led_count(&self, channel: u8) -> Result<u8> {
+        if channel > 2 {
+            anyhow::bail!("Channel must be 0, 1, or 2");
+        }
+
+        let mut data = [0u8; 2];
+        let transferred = match self.read_class_report(0x81, channel as u16, &mut data) {
+            Ok(len) => len,
+            Err(err) => {
+                if channel != 0 {
+                    self.read_class_report(0x81, 0, &mut data)?
+                } else {
+                    return Err(err);
+                }
+            }
+        };
+
+        if transferred < 2 {
+            anyhow::bail!("Failed to read LED count from device");
+        }
+
+        let count = data[1];
+
+        if count == 0 {
+            Err(anyhow!("Device reported zero LEDs on channel {}", channel))
+        } else {
+            Ok(count)
+        }
+    }
+
+    /// Fill all LEDs on a channel with the same color
+    pub fn set_all_colors(&self, channel: u8, led_count: u8, color: &RgbColor) -> Result<()> {
+        if led_count == 0 {
+            return Ok(());
+        }
+
+        let leds = vec![color.clone(); led_count as usize];
+        self.set_colors(channel, &leds)
+    }
+
+    /// Configure the number of LEDs attached to the device
+    pub fn set_led_count(&self, count: u8) -> Result<()> {
+        if count == 0 || count as usize > MAX_LED_COUNT {
+            anyhow::bail!(
+                "LED count must be between 1 and {} (got {})",
+                MAX_LED_COUNT,
+                count
+            );
+        }
+
+        let payload = [0x81, count];
+        self.send_class_report(0x81, 0, &payload)
+    }
+
     /// Create a pulse effect
     pub fn pulse(&self, color: &RgbColor, duration_ms: u32, steps: u32) -> Result<()> {
         let step_delay = Duration::from_millis((duration_ms / steps) as u64);
-        
+
         // Fade in
         for i in 0..steps {
             let factor = i as f32 / steps as f32;
@@ -330,7 +426,7 @@ impl BlinkStick {
             self.set_color(&fade_color)?;
             std::thread::sleep(step_delay);
         }
-        
+
         // Fade out
         for i in 0..steps {
             let factor = 1.0 - (i as f32 / steps as f32);
@@ -342,78 +438,131 @@ impl BlinkStick {
             self.set_color(&fade_color)?;
             std::thread::sleep(step_delay);
         }
-        
+
         Ok(())
     }
-    
+
     /// Get the current color of the first LED
     pub fn get_color(&self) -> Result<RgbColor> {
         let mut data = [0u8; 4];
         data[0] = REPORT_ID_1;
-        
+
         self.get_feature_report(&mut data)?;
-        
+
         Ok(RgbColor {
             r: data[2],
             g: data[1],
             b: data[3],
         })
     }
-    
+
     /// Get the device serial number
     pub fn get_serial(&self) -> Result<String> {
         let mut data = [0u8; 256];
-        
+
         let len = self.handle.read_control(
-            rusb::request_type(rusb::Direction::In, rusb::RequestType::Standard, rusb::Recipient::Device),
-            rusb::constants::LIBUSB_REQUEST_GET_DESCRIPTOR, 
+            rusb::request_type(
+                rusb::Direction::In,
+                rusb::RequestType::Standard,
+                rusb::Recipient::Device,
+            ),
+            rusb::constants::LIBUSB_REQUEST_GET_DESCRIPTOR,
             (rusb::constants::LIBUSB_DT_STRING as u16) << 8 | 3,
-            0, 
-            &mut data, 
-            Duration::from_secs(1)
+            0,
+            &mut data,
+            Duration::from_secs(1),
         )?;
-        
+
         if len <= 2 {
             return Err(anyhow!("Failed to get serial number"));
         }
-        
+
         // Convert UTF-16LE to String
         let utf16_chars: Vec<u16> = data[2..len]
             .chunks_exact(2)
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
-        
-        String::from_utf16(&utf16_chars).map_err(|e| anyhow!("Failed to decode serial number: {}", e))
+
+        String::from_utf16(&utf16_chars)
+            .map_err(|e| anyhow!("Failed to decode serial number: {}", e))
     }
-    
+
     /// Helper function to send feature reports
     fn send_feature_report(&self, data: &[u8]) -> Result<()> {
-        self.handle.write_control(
-            rusb::request_type(rusb::Direction::Out, rusb::RequestType::Class, rusb::Recipient::Interface),
-            0x09, // SET_REPORT
-            0x0300 | data[0] as u16, // HID_REPORT_TYPE_FEATURE | report_id
-            0,
-            data,
-            Duration::from_secs(1)
-        ).map_err(|_| BlinkStickError::ControlTransferError)?;
-        
+        self.handle
+            .write_control(
+                rusb::request_type(
+                    rusb::Direction::Out,
+                    rusb::RequestType::Class,
+                    rusb::Recipient::Interface,
+                ),
+                0x09,                    // SET_REPORT
+                0x0300 | data[0] as u16, // HID_REPORT_TYPE_FEATURE | report_id
+                0,
+                data,
+                Duration::from_secs(1),
+            )
+            .map_err(|_| BlinkStickError::ControlTransferError)?;
+
         Ok(())
     }
-    
+
+    fn send_class_report(&self, w_value: u16, w_index: u16, data: &[u8]) -> Result<()> {
+        self.handle
+            .write_control(
+                rusb::request_type(
+                    rusb::Direction::Out,
+                    rusb::RequestType::Class,
+                    rusb::Recipient::Interface,
+                ),
+                0x09,
+                w_value,
+                w_index,
+                data,
+                Duration::from_secs(1),
+            )
+            .map_err(|_| BlinkStickError::ControlTransferError)?;
+
+        Ok(())
+    }
+
     /// Helper function to get feature reports
     fn get_feature_report(&self, data: &mut [u8]) -> Result<()> {
         let report_id = data[0];
-        
-        self.handle.read_control(
-            rusb::request_type(rusb::Direction::In, rusb::RequestType::Class, rusb::Recipient::Interface),
-            0x01, // GET_REPORT
-            0x0300 | report_id as u16, // HID_REPORT_TYPE_FEATURE | report_id
-            0,
-            data,
-            Duration::from_secs(1)
-        ).map_err(|_| BlinkStickError::ControlTransferError)?;
-        
+
+        self.handle
+            .read_control(
+                rusb::request_type(
+                    rusb::Direction::In,
+                    rusb::RequestType::Class,
+                    rusb::Recipient::Interface,
+                ),
+                0x01,                      // GET_REPORT
+                0x0300 | report_id as u16, // HID_REPORT_TYPE_FEATURE | report_id
+                0,
+                data,
+                Duration::from_secs(1),
+            )
+            .map_err(|_| BlinkStickError::ControlTransferError)?;
+
         Ok(())
+    }
+
+    fn read_class_report(&self, w_value: u16, w_index: u16, data: &mut [u8]) -> Result<usize> {
+        self.handle
+            .read_control(
+                rusb::request_type(
+                    rusb::Direction::In,
+                    rusb::RequestType::Class,
+                    rusb::Recipient::Interface,
+                ),
+                0x01,
+                w_value,
+                w_index,
+                data,
+                Duration::from_secs(1),
+            )
+            .map_err(|_| BlinkStickError::ControlTransferError.into())
     }
 }
 
@@ -431,4 +580,4 @@ pub fn find_blinksticks() -> Result<Vec<Device<Context>>> {
 /// Helper function to find the first available BlinkStick
 pub fn find_first_blinkstick() -> Result<BlinkStick> {
     BlinkStick::find_first()
-} 
+}
