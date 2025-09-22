@@ -389,7 +389,8 @@ fn list_available_colors() {
     // Determine number of columns based on terminal width (assume 80 chars by default)
     let terminal_width = 80;
     let num_columns = std::cmp::max(1, terminal_width / column_width);
-    let num_rows = (num_colors + num_columns - 1) / num_columns; // Ceiling division
+    //  let num_rows = (num_colors + num_columns - 1) / num_columns; // Ceiling division
+    let num_rows = num_colors.div_ceil(num_colors);
 
     // Print in columns
     for row in 0..num_rows {
