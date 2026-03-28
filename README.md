@@ -20,7 +20,7 @@ cargo install --path .
 ### Linux permissions
 On Linux, you need permission to access USB devices. You can add a udev rule using the built-in command:
 ```bash
-sudo blinkstick add-udev-rule
+sudo ~/.cargo/bin/blinkstick add-udev-rule
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
